@@ -1,3 +1,3 @@
 User-agent: *
 Allow: /
-Sitemap: https://flyjbk.github.io/hana-stock-news/sitemap.xml
+Sitemap: https://hanastocknews.com/sitemap.xml
