@@ -1,0 +1,263 @@
+# build.ps1 — GitHub Actions용 뉴스사이트 빌드 스크립트
+# 출력: 현재 디렉토리 (레포 루트)
+
+Set-StrictMode -Off
+$ErrorActionPreference = "Continue"
+[Console]::OutputEncoding = [System.Text.Encoding]::UTF8
+
+$SITE_NAME     = "하나 주식뉴스"
+$SITE_DESC     = "코스피·코스닥 핵심 뉴스를 매일 정리합니다"
+$SITE_URL      = "https://hanastocknews.com"
+$CONTACT_EMAIL = "flyjbk@gmail.com"
+$CUSTOM_DOMAIN = "hanastocknews.com"
+$OUT           = "."
+$NOW           = Get-Date
+$DATE_KO       = $NOW.ToString("yyyy년 M월 d일")
+$DATE_ISO      = $NOW.ToString("yyyy-MM-ddTHH:mm:ss")
+
+function Get-RssItems($query, $max = 20, $days = 1) {
+    try {
+        $enc  = [Uri]::EscapeDataString($query)
+        $url  = "https://news.google.com/rss/search?q=$enc&hl=ko&gl=KR&ceid=KR:ko"
+        $resp = Invoke-WebRequest -Uri $url -UseBasicParsing -TimeoutSec 15
+        $xml  = [xml]$resp.Content
+        $cut  = $NOW.AddDays(-$days)
+        $list = [System.Collections.Generic.List[pscustomobject]]::new()
+        foreach ($item in $xml.rss.channel.item) {
+            try {
+                $pub  = [datetime]::Parse($item.pubDate)
+                if ($pub -lt $cut) { continue }
+                $title = ($item.title -replace '\s*-\s*[^-]+$','').Trim()
+                $link  = try { "$($item.link)".Trim() } catch { "#" }
+                $src   = if ($item.source) { "$($item.source.'#text')" } else { "" }
+                $hAgo  = [math]::Round(($NOW - $pub).TotalHours, 0)
+                $tLbl  = if ($hAgo -lt 1) { "방금" } elseif ($hAgo -lt 24) { "${hAgo}시간 전" } else { "$([math]::Round($hAgo/24,0))일 전" }
+                $list.Add([pscustomobject]@{ Title=$title; Link=$link; Source=$src; Time=$tLbl; Pub=$pub })
+                if ($list.Count -ge $max) { break }
+            } catch {}
+        }
+        return $list
+    } catch { return @() }
+}
+
+function HE($s) { "$s" -replace '&','&amp;' -replace '<','&lt;' -replace '>','&gt;' }
+function HA($s) { "$s" -replace '"','&quot;' }
+
+function Get-NewsCard($item, $badge = "") {
+    $t = HE $item.Title; $l = HA $item.Link; $s = HE $item.Source
+    $b = if ($badge) { "<span class='badge'>$badge</span>" } else { "" }
+    return "<a class='card' href='$l' target='_blank' rel='noopener'>$b<div class='card-title'>$t</div><div class='card-meta'><span class='source'>$s</span><span class='time'>$($item.Time)</span></div></a>`n"
+}
+
+function Get-AdSlot($label = "광고") {
+    return "<div class='ad-slot'>[ $label 광고 영역 — AdSense 승인 후 활성화 ]</div>"
+}
+
+$css = @'
+*{margin:0;padding:0;box-sizing:border-box}
+body{font-family:'Malgun Gothic','Apple SD Gothic Neo',sans-serif;background:#f5f5f5;color:#1a1a1a;font-size:15px}
+a{color:inherit;text-decoration:none}
+header{background:#0f172a;color:#fff;padding:0 20px}
+.header-inner{max-width:1100px;margin:0 auto;display:flex;align-items:center;justify-content:space-between;height:56px}
+.logo{font-size:20px;font-weight:900;color:#f59e0b;letter-spacing:1px;line-height:1.3}
+.logo-en{color:#cbd5e1;font-weight:400;font-size:13px;margin-left:8px}
+.updated{font-size:12px;color:#94a3b8;text-align:right;line-height:1.5}
+.upd-label{display:inline}
+nav{background:#1e293b;border-bottom:2px solid #f59e0b}
+.nav-inner{max-width:1100px;margin:0 auto;display:flex;gap:0}
+nav a{color:#94a3b8;padding:12px 20px;font-size:14px;font-weight:600;display:block}
+nav a:hover,nav a.active{color:#f59e0b;background:rgba(245,158,11,.1)}
+.container{max-width:1100px;margin:0 auto;padding:24px 20px}
+.page-title{font-size:22px;font-weight:900;margin-bottom:6px;color:#1a1a1a}
+.page-sub{font-size:13px;color:#64748b;margin-bottom:20px}
+.ad-slot{background:#e2e8f0;border:1px dashed #94a3b8;border-radius:8px;padding:20px;text-align:center;color:#64748b;font-size:12px;margin:20px 0}
+.section-label{font-size:11px;font-weight:800;color:#f59e0b;letter-spacing:3px;text-transform:uppercase;margin-bottom:12px;padding-bottom:8px;border-bottom:2px solid #f59e0b}
+.grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(320px,1fr));gap:14px;margin-bottom:24px}
+.card{background:#fff;border-radius:10px;padding:16px;border:1px solid #e2e8f0;display:block;transition:box-shadow .15s;position:relative}
+.card:hover{box-shadow:0 4px 16px rgba(0,0,0,.1);border-color:#f59e0b}
+.badge{display:inline-block;background:#f59e0b;color:#000;font-size:10px;font-weight:800;padding:2px 7px;border-radius:4px;letter-spacing:1px;margin-bottom:8px}
+.card-title{font-size:15px;font-weight:700;line-height:1.5;word-break:keep-all;color:#1a1a1a;margin-bottom:10px}
+.card-meta{display:flex;justify-content:space-between;font-size:12px}
+.source{color:#475569;font-weight:600}
+.time{color:#94a3b8}
+.content-box{background:#fff;border-radius:12px;padding:32px;border:1px solid #e2e8f0;max-width:700px;line-height:1.9}
+.content-box h2{font-size:18px;font-weight:900;margin:20px 0 12px;color:#1a1a1a}
+.content-box h2:first-child{margin-top:0}
+.infobox{background:#f8fafc;border-radius:8px;padding:20px;border:1px solid #e2e8f0;margin:16px 0}
+footer{background:#0f172a;color:#64748b;padding:32px 20px;margin-top:40px}
+.footer-inner{max-width:1100px;margin:0 auto}
+.footer-inner p{font-size:13px;margin-bottom:6px}
+.footer-inner a{color:#94a3b8;text-decoration:underline}
+@media(max-width:600px){
+  .grid{grid-template-columns:1fr}
+  .nav-inner{overflow-x:auto}
+  nav a{padding:12px 14px;white-space:nowrap}
+  .header-inner{height:auto;padding:10px 0;flex-wrap:wrap;gap:4px}
+  .logo{font-size:17px}
+  .logo-en{display:block;margin-left:0;margin-top:1px;font-size:12px}
+  .updated{font-size:11px}
+  .upd-label{display:block}
+}
+'@
+
+function Get-Page($title, $activeNav, $content) {
+    $pages = @(
+        @{href="index.html"; label="홈"},
+        @{href="kospi.html"; label="코스피"},
+        @{href="kosdaq.html"; label="코스닥"},
+        @{href="stocks.html"; label="종목이슈"},
+        @{href="about.html"; label="소개"},
+        @{href="contact.html"; label="문의"}
+    )
+    $navHtml = ""
+    foreach ($p in $pages) {
+        $cls = if ($p.href -eq $activeNav) { " class='active'" } else { "" }
+        $navHtml += "<a href='$($p.href)'$cls>$($p.label)</a>"
+    }
+    return @"
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="description" content="$SITE_DESC">
+<meta property="og:title" content="$title - $SITE_NAME">
+<meta property="og:description" content="$SITE_DESC">
+<meta property="article:modified_time" content="$DATE_ISO">
+<title>$title - $SITE_NAME</title>
+<style>$css</style>
+</head>
+<body>
+<header><div class="header-inner">
+  <div class="logo">하나 주식뉴스<span class='logo-en'>HANA STOCK NEWS</span></div>
+  <div class="updated">$DATE_KO<span class='upd-label'> 업데이트</span></div>
+</div></header>
+<nav><div class="nav-inner">$navHtml</div></nav>
+<div class="container">$content</div>
+<footer><div class="footer-inner">
+  <p style="font-size:15px;font-weight:700;color:#f59e0b;margin-bottom:10px">하나 주식뉴스</p>
+  <p>코스피·코스닥 핵심 뉴스를 매일 자동으로 정리합니다.</p>
+  <p style="margin-top:8px">뉴스 출처: Google News RSS · 각 기사의 저작권은 원 언론사에 있습니다.</p>
+  <p style="margin-top:8px;color:#94a3b8;font-size:12px">본 사이트는 정보 제공 목적이며 투자 조언이 아닙니다.</p>
+  <p style="margin-top:16px"><a href="about.html">소개</a> · <a href="contact.html">문의</a> · <a href="privacy.html">개인정보처리방침</a></p>
+  <p style="margin-top:8px;font-size:12px">© $($NOW.Year) 하나 주식뉴스 · $CONTACT_EMAIL</p>
+</div></footer>
+</body></html>
+"@
+}
+
+Write-Host "=== 하나 주식뉴스 빌드 시작 ===" -ForegroundColor Cyan
+
+Write-Host "  뉴스 수집 중..." -ForegroundColor Gray
+$kospiNews  = Get-RssItems "코스피 증시" 20 1
+$kosdaqNews = Get-RssItems "코스닥 증시" 20 1
+$stockNews  = Get-RssItems "주식 종목 이슈" 20 2
+$macroNews  = Get-RssItems "환율 금리 경제" 10 1
+$topNews    = Get-RssItems "코스피 코스닥 오늘" 5 1
+
+# index.html
+$updateTime  = $NOW.ToString("HH:mm")
+$pointItems  = @($topNews + $kospiNews) | Select-Object -First 3
+$pointHtml   = ""
+foreach ($p in $pointItems) {
+    $t = HE $p.Title; $l = HA $p.Link
+    $pointHtml += "<li><a href='$l' target='_blank' rel='noopener' style='color:#1a1a1a;text-decoration:none'>$t</a></li>`n"
+}
+$topCards    = ""; foreach ($n in $topNews)                          { $topCards    += Get-NewsCard $n "PICK" }
+$kospiCards  = ""; foreach ($n in ($kospiNews  | Select-Object -First 6)) { $kospiCards  += Get-NewsCard $n }
+$kosdaqCards = ""; foreach ($n in ($kosdaqNews | Select-Object -First 6)) { $kosdaqCards += Get-NewsCard $n }
+$macroCards  = ""; foreach ($n in ($macroNews  | Select-Object -First 4)) { $macroCards  += Get-NewsCard $n }
+
+$indexContent = @"
+<div class="page-title">오늘의 주식 뉴스</div>
+<div class="page-sub">$DATE_KO · 코스피·코스닥 핵심 뉴스 자동 수집 · 하루 4회 업데이트</div>
+<div style="background:#fff;border-radius:12px;padding:20px 24px;border:1px solid #e2e8f0;margin-bottom:24px;border-left:4px solid #f59e0b">
+  <div style="font-size:12px;font-weight:800;color:#f59e0b;letter-spacing:2px;margin-bottom:12px">TODAY'S MARKET POINT · $updateTime 기준</div>
+  <ul style="padding-left:18px;line-height:2.2;font-size:14px;font-weight:600;color:#1a1a1a">
+$pointHtml  </ul>
+  <p style="margin-top:12px;font-size:12px;color:#94a3b8">※ 각 뉴스 클릭 시 원문 기사로 이동합니다. 본 요약은 투자 조언이 아닙니다.</p>
+</div>
+$(Get-AdSlot "상단")
+<div class="section-label">TODAY'S PICK</div>
+<div class="grid">$topCards</div>
+<div class="section-label">코스피</div>
+<div class="grid">$kospiCards</div>
+<p style="text-align:right;margin:-10px 0 20px"><a href="kospi.html" style="color:#f59e0b;font-size:13px;font-weight:700">코스피 뉴스 더보기 →</a></p>
+$(Get-AdSlot "중간")
+<div class="section-label">코스닥</div>
+<div class="grid">$kosdaqCards</div>
+<p style="text-align:right;margin:-10px 0 20px"><a href="kosdaq.html" style="color:#f59e0b;font-size:13px;font-weight:700">코스닥 뉴스 더보기 →</a></p>
+<div class="section-label">환율·금리·거시경제</div>
+<div class="grid">$macroCards</div>
+$(Get-AdSlot "하단")
+"@
+[System.IO.File]::WriteAllText("$OUT/index.html", (Get-Page "오늘의 주식 뉴스" "index.html" $indexContent), (New-Object System.Text.UTF8Encoding($true)))
+
+# kospi.html
+$allKospiCards = ""; foreach ($n in $kospiNews) { $allKospiCards += Get-NewsCard $n }
+$kospiContent = "<div class='page-title'>코스피 뉴스</div><div class='page-sub'>$DATE_KO · KOSPI 관련 최신 뉴스</div>$(Get-AdSlot '상단')<div class='section-label'>KOSPI 최신 뉴스</div><div class='grid'>$allKospiCards</div>$(Get-AdSlot '하단')"
+[System.IO.File]::WriteAllText("$OUT/kospi.html", (Get-Page "코스피 뉴스" "kospi.html" $kospiContent), (New-Object System.Text.UTF8Encoding($true)))
+
+# kosdaq.html
+$allKosdaqCards = ""; foreach ($n in $kosdaqNews) { $allKosdaqCards += Get-NewsCard $n }
+$kosdaqContent = "<div class='page-title'>코스닥 뉴스</div><div class='page-sub'>$DATE_KO · KOSDAQ 관련 최신 뉴스</div>$(Get-AdSlot '상단')<div class='section-label'>KOSDAQ 최신 뉴스</div><div class='grid'>$allKosdaqCards</div>$(Get-AdSlot '하단')"
+[System.IO.File]::WriteAllText("$OUT/kosdaq.html", (Get-Page "코스닥 뉴스" "kosdaq.html" $kosdaqContent), (New-Object System.Text.UTF8Encoding($true)))
+
+# stocks.html
+$allStockCards = ""; foreach ($n in $stockNews) { $allStockCards += Get-NewsCard $n }
+$stocksContent = "<div class='page-title'>종목 이슈</div><div class='page-sub'>$DATE_KO · 주요 종목 관련 최신 뉴스</div>$(Get-AdSlot '상단')<div class='section-label'>종목 이슈 최신 뉴스</div><div class='grid'>$allStockCards</div>$(Get-AdSlot '하단')"
+[System.IO.File]::WriteAllText("$OUT/stocks.html", (Get-Page "종목 이슈" "stocks.html" $stocksContent), (New-Object System.Text.UTF8Encoding($true)))
+
+# about.html
+$aboutContent = @"
+<div class="page-title">소개</div><div class="page-sub">하나 주식뉴스에 대하여</div>
+<div class="content-box">
+  <h2>하나 주식뉴스란?</h2>
+  <p>코스피·코스닥 시장의 핵심 뉴스를 매일 자동으로 수집·정리하는 주식 정보 사이트입니다.</p>
+  <br><p>복잡한 뉴스 속에서 꼭 알아야 할 정보만 빠르게 확인하실 수 있도록, 국내 주요 언론의 주식·경제 뉴스를 실시간으로 모아드립니다.</p>
+  <h2>제공 정보</h2>
+  <ul style="padding-left:20px;line-height:2"><li>코스피 시장 최신 뉴스</li><li>코스닥 시장 최신 뉴스</li><li>주요 종목 이슈</li><li>환율·금리·거시경제 뉴스</li></ul>
+  <h2>면책 조항</h2>
+  <p>본 사이트는 정보 제공만을 목적으로 하며 투자 조언을 제공하지 않습니다.</p>
+  <br><p style="color:#64748b;font-size:13px">문의: $CONTACT_EMAIL</p>
+</div>
+"@
+[System.IO.File]::WriteAllText("$OUT/about.html", (Get-Page "소개" "about.html" $aboutContent), (New-Object System.Text.UTF8Encoding($true)))
+
+# contact.html
+$contactContent = @"
+<div class="page-title">문의</div><div class="page-sub">하나 주식뉴스에 문의하세요</div>
+<div class="content-box">
+  <h2>연락처</h2>
+  <p>광고 문의, 제휴 제안, 오류 신고 등 모든 문의는 이메일로 보내주세요.</p>
+  <div class="infobox">
+    <p style="font-size:14px;color:#64748b;margin-bottom:6px">이메일</p>
+    <p style="font-size:18px;font-weight:700"><a href="mailto:$CONTACT_EMAIL" style="color:#f59e0b">$CONTACT_EMAIL</a></p>
+  </div>
+  <h2>문의 유형</h2>
+  <ul style="padding-left:20px;line-height:2.2;font-size:14px"><li>광고 게재 문의</li><li>뉴스 오류 신고</li><li>서비스 제휴 제안</li><li>기타 의견 및 피드백</li></ul>
+  <br><p style="color:#94a3b8;font-size:13px">영업일 기준 1~2일 내 답변드립니다.</p>
+</div>
+"@
+[System.IO.File]::WriteAllText("$OUT/contact.html", (Get-Page "문의" "contact.html" $contactContent), (New-Object System.Text.UTF8Encoding($true)))
+
+# privacy.html
+$privacyContent = @"
+<div class="page-title">개인정보처리방침</div><div class="page-sub">Privacy Policy</div>
+<div class="content-box" style="font-size:14px">
+  <p><strong>최종 수정일:</strong> $DATE_KO</p>
+  <h2>1. 수집하는 정보</h2><p>본 사이트는 방문자의 개인정보를 직접 수집하지 않습니다.</p>
+  <h2>2. 쿠키 사용</h2><p>Google AdSense를 통해 광고를 제공합니다. Google은 쿠키를 사용하여 방문자에게 적합한 광고를 표시합니다.</p>
+  <h2>3. 제3자 서비스</h2><p>Google News RSS를 통해 뉴스를 수집합니다. 각 기사의 저작권은 원 언론사에 있습니다.</p>
+  <h2>4. 문의</h2><p>$CONTACT_EMAIL</p>
+</div>
+"@
+[System.IO.File]::WriteAllText("$OUT/privacy.html", (Get-Page "개인정보처리방침" "about.html" $privacyContent), (New-Object System.Text.UTF8Encoding($true)))
+
+# CNAME + sitemap + robots
+[System.IO.File]::WriteAllText("$OUT/CNAME", $CUSTOM_DOMAIN)
+$sitemap = "<?xml version='1.0' encoding='UTF-8'?><urlset xmlns='http://www.sitemaps.org/schemas/sitemap/0.9'><url><loc>$SITE_URL/index.html</loc><changefreq>daily</changefreq><priority>1.0</priority></url><url><loc>$SITE_URL/kospi.html</loc><changefreq>daily</changefreq><priority>0.9</priority></url><url><loc>$SITE_URL/kosdaq.html</loc><changefreq>daily</changefreq><priority>0.9</priority></url><url><loc>$SITE_URL/stocks.html</loc><changefreq>daily</changefreq><priority>0.8</priority></url><url><loc>$SITE_URL/contact.html</loc><changefreq>monthly</changefreq><priority>0.5</priority></url><url><loc>$SITE_URL/privacy.html</loc><changefreq>monthly</changefreq><priority>0.4</priority></url></urlset>"
+[System.IO.File]::WriteAllText("$OUT/sitemap.xml", $sitemap, (New-Object System.Text.UTF8Encoding($true)))
+[System.IO.File]::WriteAllText("$OUT/robots.txt", "User-agent: *`nAllow: /`nSitemap: $SITE_URL/sitemap.xml")
+
+Write-Host "=== 빌드 완료 ===" -ForegroundColor Green

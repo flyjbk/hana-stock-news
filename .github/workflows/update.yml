@@ -1,0 +1,30 @@
+name: Update News Site
+
+on:
+  schedule:
+    - cron: '0 22 * * *'   # KST 07:00
+    - cron: '0 2 * * *'    # KST 11:00
+    - cron: '0 6 * * *'    # KST 15:00
+    - cron: '0 10 * * *'   # KST 19:00
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build site
+        shell: pwsh
+        run: pwsh scripts/build.ps1
+
+      - name: Commit and push
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add -A
+          git diff --staged --quiet || git commit -m "auto: update $(date +'%Y-%m-%d %H:%M') KST"
+          git push
